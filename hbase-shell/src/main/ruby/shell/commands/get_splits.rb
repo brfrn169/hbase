@@ -38,8 +38,7 @@ EOF
 
       def get_splits(table)
         splits = table._get_splits_internal()
-        puts(format('Total number of splits = %<numsplits>d',
-                    numsplits: (splits.size + 1)))
+        puts(format('Total number of splits = %<numsplits>d', splits.size + 1))
         splits
       end
     end
