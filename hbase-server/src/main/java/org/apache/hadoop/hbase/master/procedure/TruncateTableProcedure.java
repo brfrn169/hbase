@@ -29,6 +29,7 @@ import org.apache.hadoop.hbase.TableNotDisabledException;
 import org.apache.hadoop.hbase.TableNotFoundException;
 import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.RegionInfoBuilder;
+import org.apache.hadoop.hbase.client.RegionReplicaUtil;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.procedure2.ProcedureStateSerializer;
@@ -89,6 +90,7 @@ public class TruncateTableProcedure
           // TODO: Move out... in the acquireLock()
           LOG.debug("waiting for '" + getTableName() + "' regions in transition");
           regions = env.getAssignmentManager().getRegionStates().getRegionsOfTable(getTableName());
+          RegionReplicaUtil.removeNonDefaultRegions(regions);
           assert regions != null && !regions.isEmpty() : "unexpected 0 regions";
           ProcedureSyncWait.waitRegionInTransition(env, regions);
 
@@ -148,7 +150,8 @@ public class TruncateTableProcedure
       if (isRollbackSupported(state)) {
         setFailure("master-truncate-table", e);
       } else {
-        LOG.warn("Retriable error trying to truncate table=" + getTableName() + " state=" + state, e);
+        LOG.warn("Retriable error trying to truncate table=" + getTableName()
+          + " state=" + state, e);
       }
     }
     return Flow.HAS_MORE_STATE;
