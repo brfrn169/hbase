@@ -17,13 +17,19 @@
  */
 package org.apache.hadoop.hbase.client;
 
+import static org.junit.Assert.assertEquals;
+
 import java.io.IOException;
+import java.util.List;
+
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.NamespaceNotFoundException;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.master.RegionState;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
 import org.apache.hadoop.hbase.snapshot.SnapshotDoesNotExistException;
 import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils;
@@ -160,7 +166,8 @@ public class TestCloneSnapshotFromClient {
   @Test(expected=SnapshotDoesNotExistException.class)
   public void testCloneNonExistentSnapshot() throws IOException, InterruptedException {
     String snapshotName = "random-snapshot-" + System.currentTimeMillis();
-    final TableName tableName = TableName.valueOf(name.getMethodName() + "-" + System.currentTimeMillis());
+    final TableName tableName = TableName.valueOf(name.getMethodName() + "-"
+      + System.currentTimeMillis());
     admin.cloneSnapshot(snapshotName, tableName);
   }
 
@@ -172,7 +179,8 @@ public class TestCloneSnapshotFromClient {
 
   @Test
   public void testCloneSnapshot() throws IOException, InterruptedException {
-    final TableName clonedTableName = TableName.valueOf(name.getMethodName() + "-" + System.currentTimeMillis());
+    final TableName clonedTableName = TableName.valueOf(name.getMethodName() + "-"
+      + System.currentTimeMillis());
     testCloneSnapshot(clonedTableName, snapshotName0, snapshot0Rows);
     testCloneSnapshot(clonedTableName, snapshotName1, snapshot1Rows);
     testCloneSnapshot(clonedTableName, emptySnapshot, 0);
@@ -196,7 +204,8 @@ public class TestCloneSnapshotFromClient {
   public void testCloneSnapshotCrossNamespace() throws IOException, InterruptedException {
     String nsName = "testCloneSnapshotCrossNamespace";
     admin.createNamespace(NamespaceDescriptor.create(nsName).build());
-    final TableName clonedTableName = TableName.valueOf(nsName, name.getMethodName() + "-" + System.currentTimeMillis());
+    final TableName clonedTableName = TableName.valueOf(nsName, name.getMethodName()
+      + "-" + System.currentTimeMillis());
     testCloneSnapshot(clonedTableName, snapshotName0, snapshot0Rows);
     testCloneSnapshot(clonedTableName, snapshotName1, snapshot1Rows);
     testCloneSnapshot(clonedTableName, emptySnapshot, 0);
@@ -208,7 +217,8 @@ public class TestCloneSnapshotFromClient {
   @Test
   public void testCloneLinksAfterDelete() throws IOException, InterruptedException {
     // Clone a table from the first snapshot
-    final TableName clonedTableName = TableName.valueOf(name.getMethodName() + "1-" + System.currentTimeMillis());
+    final TableName clonedTableName = TableName.valueOf(name.getMethodName() + "1-"
+      + System.currentTimeMillis());
     admin.cloneSnapshot(snapshotName0, clonedTableName);
     verifyRowCount(TEST_UTIL, clonedTableName, snapshot0Rows);
 
@@ -217,7 +227,8 @@ public class TestCloneSnapshotFromClient {
     admin.snapshot(snapshotName2, clonedTableName);
 
     // Clone the snapshot of the cloned table
-    final TableName clonedTableName2 = TableName.valueOf(name.getMethodName() + "2-" + System.currentTimeMillis());
+    final TableName clonedTableName2 = TableName.valueOf(name.getMethodName() + "2-"
+      + System.currentTimeMillis());
     admin.cloneSnapshot(snapshotName2, clonedTableName2);
     verifyRowCount(TEST_UTIL, clonedTableName2, snapshot0Rows);
     admin.disableTable(clonedTableName2);
@@ -244,7 +255,8 @@ public class TestCloneSnapshotFromClient {
     verifyRowCount(TEST_UTIL, clonedTableName2, snapshot0Rows);
 
     // Clone a new table from cloned
-    final TableName clonedTableName3 = TableName.valueOf(name.getMethodName() + "3-" + System.currentTimeMillis());
+    final TableName clonedTableName3 = TableName.valueOf(name.getMethodName() + "3-"
+      + System.currentTimeMillis());
     admin.cloneSnapshot(snapshotName2, clonedTableName3);
     verifyRowCount(TEST_UTIL, clonedTableName3, snapshot0Rows);
 
@@ -252,6 +264,46 @@ public class TestCloneSnapshotFromClient {
     TEST_UTIL.deleteTable(clonedTableName2);
     TEST_UTIL.deleteTable(clonedTableName3);
     admin.deleteSnapshot(snapshotName2);
+  }
+
+  @Test
+  public void testCloneSnapshotAfterSplittingRegion() throws IOException, InterruptedException {
+    // Turn off the CatalogJanitor
+    admin.catalogJanitorSwitch(false);
+
+    List<RegionInfo> regionInfos = admin.getRegions(tableName);
+    RegionReplicaUtil.removeNonDefaultRegions(regionInfos);
+
+    // Split the first region
+    splitRegion(regionInfos.get(0));
+
+    // Take a snapshot
+    admin.snapshot(snapshotName2, tableName);
+
+    // Clone the snapshot to another table
+    TableName clonedTableName = TableName.valueOf(name.getMethodName() + "-" +
+      System.currentTimeMillis());
+    admin.cloneSnapshot(snapshotName2, clonedTableName);
+    SnapshotTestingUtils.waitForTableToBeOnline(TEST_UTIL, clonedTableName);
+
+    // Get a state of the split parent region of the cloned table
+    List<RegionInfo> regionInfosOfClonedTable = MetaTableAccessor
+      .getTableRegions(admin.getConnection(), clonedTableName, false);
+
+    RegionInfo regionInfoOfSplitRegion = regionInfosOfClonedTable.stream()
+      .filter(ri -> ri.isOffline() && (ri.isSplit() || ri.isSplitParent()))
+      .findAny()
+      .orElseThrow(() -> new IllegalStateException(
+        "The split parent region of the cloned table doesn't exist. Why?"));
+
+    RegionState.State stateOfSplitRegion = TEST_UTIL.getHBaseCluster().getMaster()
+      .getAssignmentManager().getRegionStates().getRegionState(regionInfoOfSplitRegion).getState();
+
+    // The state of the split parent region should be SPLIT
+    assertEquals(RegionState.State.SPLIT, stateOfSplitRegion);
+
+    TEST_UTIL.deleteTable(clonedTableName);
+    admin.catalogJanitorSwitch(true);
   }
 
   // ==========================================================================
@@ -265,5 +317,10 @@ public class TestCloneSnapshotFromClient {
   protected void verifyRowCount(final HBaseTestingUtility util, final TableName tableName,
       long expectedRows) throws IOException {
     SnapshotTestingUtils.verifyRowCount(util, tableName, expectedRows);
+  }
+
+  protected void splitRegion(final RegionInfo regionInfo) throws IOException {
+    byte[][] splitPoints = Bytes.split(regionInfo.getStartKey(), regionInfo.getEndKey(), 1);
+    admin.split(regionInfo.getTable(), splitPoints[1]);
   }
 }

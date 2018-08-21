@@ -109,6 +109,10 @@ public class RegionStateNode implements Comparable<RegionStateNode> {
     this.regionInfo = regionInfo;
     this.event = new AssignmentProcedureEvent(regionInfo);
     this.ritMap = ritMap;
+
+//    if (regionInfo.isOffline() && (regionInfo.isSplit() || regionInfo.isSplitParent())) {
+//      state = State.SPLIT;
+//    }
   }
 
   /**
